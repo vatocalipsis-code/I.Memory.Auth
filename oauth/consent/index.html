@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'unsafe-inline' https://esm.sh; connect-src https://*.supabase.co; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+  <title>ISKRA Authorization</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; background:#0c0d10; color:#f5f7fb; }
+    main { width:min(92vw,460px); padding:28px; border:1px solid #2a2d35; border-radius:18px; background:#15171c; box-shadow:0 20px 60px #0008; }
+    h1 { margin:0 0 8px; font-size:28px; }
+    p { color:#b7bdc9; line-height:1.5; }
+    label { display:block; margin:14px 0 6px; font-size:14px; color:#cbd1dc; }
+    input { width:100%; box-sizing:border-box; padding:12px 13px; border-radius:10px; border:1px solid #343844; background:#0f1115; color:#fff; }
+    button { margin-top:14px; width:100%; padding:12px 14px; border:0; border-radius:10px; font-weight:700; cursor:pointer; }
+    .primary { background:#fff; color:#111; }
+    .secondary { background:#262a33; color:#fff; }
+    .danger { background:#3a2024; color:#ffd7da; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .muted { font-size:13px; color:#8d94a3; overflow-wrap:anywhere; }
+    .error { margin-top:12px; padding:10px 12px; border-radius:10px; background:#351c21; color:#ffd5da; white-space:pre-wrap; }
+    .card { margin:14px 0; padding:14px; border-radius:12px; background:#101218; border:1px solid #292d36; }
+    ul { padding-left:20px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>ISKRA</h1>
+  <p>Authorize access to your memory service.</p>
+
+  <section id="login" hidden>
+    <label for="email">Email</label>
+    <input id="email" type="email" autocomplete="username">
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <button id="loginBtn" class="primary">Sign in</button>
+    <div class="muted">Sign-up and password reset are intentionally unavailable here.</div>
+  </section>
+
+  <section id="consent" hidden>
+    <div class="card">
+      <strong id="clientName">OAuth client</strong>
+      <div class="muted" id="redirectUri"></div>
+      <div id="scopesWrap" hidden>
+        <p class="muted">Requested scopes</p>
+        <ul id="scopes"></ul>
+      </div>
+    </div>
+    <div class="row">
+      <button id="denyBtn" class="danger">Deny</button>
+      <button id="approveBtn" class="primary">Approve</button>
+    </div>
+    <button id="signOutBtn" class="secondary">Sign out</button>
+  </section>
+
+  <div id="status" class="muted"></div>
+  <div id="error" class="error" hidden></div>
+</main>
+
+<script src="../../config.js"></script>
+<script type="module">
+  import { createClient } from "https://esm.sh/@supabase/supabase-js@2.95.0";
+
+  const cfg = window.ISKRA_AUTH_CONFIG;
+  const errorBox = document.getElementById("error");
+  const status = document.getElementById("status");
+  const login = document.getElementById("login");
+  const consent = document.getElementById("consent");
+  const authorizationId = new URLSearchParams(location.search).get("authorization_id");
+
+  function fail(message) {
+    errorBox.hidden = false;
+    errorBox.textContent = message || "Unknown error";
+    status.textContent = "";
+  }
+
+  function clearError() {
+    errorBox.hidden = true;
+    errorBox.textContent = "";
+  }
+
+  if (!cfg?.supabaseUrl || !cfg?.publishableKey) {
+    fail("Authorization frontend is not configured.");
+    throw new Error("Missing ISKRA_AUTH_CONFIG");
+  }
+
+  const supabase = createClient(cfg.supabaseUrl, cfg.publishableKey, {
+    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  });
+
+  async function render() {
+    clearError();
+    login.hidden = true;
+    consent.hidden = true;
+
+    if (!authorizationId) {
+      fail("Missing authorization_id. Start authorization from the MCP client.");
+      return;
+    }
+
+    status.textContent = "Checking session…";
+    const { data: userData } = await supabase.auth.getUser();
+
+    if (!userData?.user) {
+      login.hidden = false;
+      status.textContent = "Sign in to continue.";
+      return;
+    }
+
+    status.textContent = "Loading authorization request…";
+    const { data, error } = await supabase.auth.oauth.getAuthorizationDetails(authorizationId);
+
+    if (error) {
+      fail(error.message);
+      return;
+    }
+    if (!data) {
+      fail("Authorization request not found.");
+      return;
+    }
+    if (!("authorization_id" in data) && data.redirect_url) {
+      location.assign(data.redirect_url);
+      return;
+    }
+
+    document.getElementById("clientName").textContent = data.client?.name || "OAuth client";
+    document.getElementById("redirectUri").textContent = data.redirect_uri || "";
+
+    const scopes = (data.scope || "").trim().split(/\s+/).filter(Boolean);
+    const list = document.getElementById("scopes");
+    list.replaceChildren(...scopes.map(scope => {
+      const li = document.createElement("li");
+      li.textContent = scope;
+      return li;
+    }));
+    document.getElementById("scopesWrap").hidden = scopes.length === 0;
+
+    consent.hidden = false;
+    status.textContent = "Signed in as " + (userData.user.email || userData.user.id);
+  }
+
+  document.getElementById("loginBtn").addEventListener("click", async () => {
+    clearError();
+    status.textContent = "Signing in…";
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) return fail(error.message);
+    await render();
+  });
+
+  document.getElementById("approveBtn").addEventListener("click", async () => {
+    clearError();
+    status.textContent = "Approving…";
+    const { data, error } = await supabase.auth.oauth.approveAuthorization(authorizationId);
+    if (error) return fail(error.message);
+    location.assign(data.redirect_url);
+  });
+
+  document.getElementById("denyBtn").addEventListener("click", async () => {
+    clearError();
+    status.textContent = "Denying…";
+    const { data, error } = await supabase.auth.oauth.denyAuthorization(authorizationId);
+    if (error) return fail(error.message);
+    location.assign(data.redirect_url);
+  });
+
+  document.getElementById("signOutBtn").addEventListener("click", async () => {
+    await supabase.auth.signOut();
+    await render();
+  });
+
+  render();
+</script>
+</body>
+</html>
